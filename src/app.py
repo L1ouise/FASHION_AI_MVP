@@ -406,7 +406,11 @@ else:
         if q:
             with st.spinner("Recherche en cours..."):
                 vec = model().encode(q).tolist()
-                res = client.search(collection_name="fashion_images", query_vector=vec, limit=6)
+                try:
+                    res = client.search(collection_name="fashion_images", query_vector=vec, limit=6)
+                except Exception:
+                    res = []
+                    st.error("Erreur de connexion à la base vectorielle. Le catalogue n'est peut-être pas encore indexé.")
 
             if res:
                 st.caption(f"{len(res)} résultats pour « {q} »")
@@ -456,7 +460,11 @@ else:
         if source_img:
             with st.spinner("Génération du look..."):
                 vec = model().encode(source_img).tolist()
-                res = client.search(collection_name="fashion_images", query_vector=vec, limit=5)
+                try:
+                    res = client.search(collection_name="fashion_images", query_vector=vec, limit=5)
+                except Exception:
+                    res = []
+                    st.error("Erreur de connexion à la base vectorielle. Le catalogue n'est peut-être pas encore indexé.")
 
             if res:
                 st.markdown("**Pièce principale**")
@@ -526,7 +534,11 @@ else:
         from sklearn.cluster import KMeans
 
         with st.spinner("Chargement des données..."):
-            pts = client.scroll(collection_name="fashion_images", with_vectors=True)[0]
+            try:
+                pts = client.scroll(collection_name="fashion_images", with_vectors=True)[0]
+            except Exception:
+                pts = []
+                st.error("Erreur de connexion à la base vectorielle.")
 
         if pts:
             # ─── Key metrics row ──────────────────────────────────────────

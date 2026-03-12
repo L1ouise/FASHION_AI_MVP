@@ -29,11 +29,19 @@ def get_qdrant_client():
             timeout=120,
         )
 
-    # création collection profils si absente
+    # création collections si absentes
     collections = [c.name for c in client.get_collections().collections]
     if "user_profiles" not in collections:
         client.create_collection(
             collection_name="user_profiles",
+            vectors_config=VectorParams(
+                size=512,
+                distance=Distance.COSINE
+            )
+        )
+    if "fashion_images" not in collections:
+        client.create_collection(
+            collection_name="fashion_images",
             vectors_config=VectorParams(
                 size=512,
                 distance=Distance.COSINE
