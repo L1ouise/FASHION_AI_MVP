@@ -1,89 +1,112 @@
+# profile_ai.py
 import streamlit as st
-from utile import save_profile_to_qdrant
-
+from utile import save_profile_to_qdrant, hash_password, get_user_profile
+ 
 def show_profile_sidebar(client, model, username, user_profile=None, require_password=False):
     """
-    Affiche un formulaire complet pour créer ou mettre à jour un profil utilisateur.
-    - client : Qdrant client
-    - model : modèle d'encodage pour images
-    - username : pseudo utilisateur
-    - user_profile : dictionnaire des données existantes (optionnel)
-    - require_password : True si on veut demander mot de passe et confirmation (création de compte)
+    Formulaire création ou mise à jour de profil.
+    Logique "patch" : seuls les champs modifiés sont mis à jour dans la BD.
     """
-
+ 
     st.header("Mon Profil")
-
+ 
+    # Récupérer le profil complet depuis la BD si pas fourni
+    if user_profile is None:
+        user_profile = get_user_profile(client, username) or {}
+ 
     with st.form("profile_form"):
-
+ 
         col1, col2 = st.columns(2)
-
-        # Nom et Prénom
-        nom = col1.text_input("Nom", value=user_profile.get("nom", "") if user_profile else "")
-        prenom = col2.text_input("Prénom", value=user_profile.get("prenom", "") if user_profile else "")
-
+ 
+        # Nom et prénom
+        nom_input = col1.text_input("Nom", value=user_profile.get("nom", ""))
+        prenom_input = col2.text_input("Prénom", value=user_profile.get("prenom", ""))
+ 
         # Âge
-        age = st.number_input(
+        age_input = st.number_input(
             "Âge",
             min_value=15,
             max_value=100,
-            value=user_profile.get("age", 25) if user_profile else 25
+            value=user_profile.get("age", 25)
         )
-
+ 
         # Teint
         teint_options = ["Clair / Pâle", "Intermédiaire / Mat", "Foncé / Noir"]
-        default_teint = user_profile.get("teint", "Clair / Pâle") if user_profile else "Clair / Pâle"
-        teint = st.radio("Teint", teint_options, index=teint_options.index(default_teint))
-
+        default_teint = user_profile.get("teint", "Clair / Pâle")
+        teint_input = st.radio("Teint", teint_options, index=teint_options.index(default_teint))
+ 
         # Morphologie
         morpho_options = ["A", "V", "H", "X", "O"]
-        default_morpho = user_profile.get("morpho", "A") if user_profile else "A"
-        morpho = st.selectbox("Morphologie", morpho_options, index=morpho_options.index(default_morpho))
-
+        default_morpho = user_profile.get("morpho", "A")
+        morpho_input = st.selectbox("Morphologie", morpho_options, index=morpho_options.index(default_morpho))
+ 
         # Taille
-        taille = st.number_input(
+        taille_input = st.number_input(
             "Taille (cm)",
             min_value=120,
             max_value=220,
-            value=user_profile.get("taille", 170) if user_profile else 170
+            value=user_profile.get("taille", 170)
         )
-
+ 
         # Pseudo
-        st.text_input("Pseudo", value=username)
-
-        # Mot de passe (si création de compte)
-        password = None
+        username_input = st.text_input("Pseudo", value=user_profile.get("user_pseudo", username))
+ 
+        # Mot de passe
+        password_input = None
+        password_to_store = user_profile.get("password")  # On conserve le hash existant par défaut
         if require_password:
-            password = st.text_input("Mot de passe", type="password")
+            password_input = st.text_input("Mot de passe", type="password")
             password_confirm = st.text_input("Confirmer mot de passe", type="password")
-            if password != password_confirm:
-                st.warning("Les mots de passe ne correspondent pas !")
+            if password_input and password_confirm and password_input != password_confirm:
+                st.warning("Les mots de passe ne correspondent pas")
                 st.stop()
-
-        # Photo entière
-        profile_img = st.file_uploader(
-            "Uploader une photo entière (optionnel)",
-            type=["png", "jpg", "jpeg"]
-        )
-
+            if password_input:
+                password_to_store = hash_password(password_input)
+        else:
+            modify_password = st.checkbox("Modifier le mot de passe")
+            if modify_password:
+                password_input = st.text_input("Nouveau mot de passe", type="password")
+                password_confirm = st.text_input("Confirmer le nouveau mot de passe", type="password")
+                if password_input and password_confirm and password_input != password_confirm:
+                    st.warning("Les mots de passe ne correspondent pas")
+                    st.stop()
+                if password_input:
+                    password_to_store = hash_password(password_input)
+ 
+        # Photo
+        profile_img_input = st.file_uploader("Uploader une photo entière (optionnel)", type=["png","jpg","jpeg"])
+ 
+        # Bouton
         submit_btn = st.form_submit_button("Enregistrer le profil")
-
-       if submit_btn:
-          user_data = {
-              "nom": nom,
-              "prenom": prenom,
-              "age": age,
-              "teint": teint,
-              "morpho": morpho,
-              "taille": taille,
-              "user_pseudo": username,
-              "password": hash_password(password) if require_password else None
-         } 
-
-    if profile_img:
-        user_data["profile_img_file"] = profile_img
-
-    save_profile_to_qdrant(client, model, username, user_data)
-    st.success("Profil sauvegardé avec succès !")
-
-    # remplacer experimental_rerun par st.stop pour forcer Streamlit à recharger
-    st.stop()
+ 
+        if submit_btn:
+            # Dictionnaire pour mettre à jour uniquement les champs modifiés
+            updated_fields = {}
+ 
+            if nom_input != user_profile.get("nom", ""):
+                updated_fields["nom"] = nom_input
+            if prenom_input != user_profile.get("prenom", ""):
+                updated_fields["prenom"] = prenom_input
+            if age_input != user_profile.get("age", 25):
+                updated_fields["age"] = age_input
+            if teint_input != user_profile.get("teint", "Clair / Pâle"):
+                updated_fields["teint"] = teint_input
+            if morpho_input != user_profile.get("morpho", "A"):
+                updated_fields["morpho"] = morpho_input
+            if taille_input != user_profile.get("taille", 170):
+                updated_fields["taille"] = taille_input
+            if username_input != user_profile.get("user_pseudo", username):
+                updated_fields["user_pseudo"] = username_input
+            if password_to_store != user_profile.get("password"):
+                updated_fields["password"] = password_to_store
+            if profile_img_input is not None:
+                updated_fields["profile_img_file"] = profile_img_input
+ 
+            if updated_fields:
+                # Appel patch / update partiel
+                save_profile_to_qdrant(client, model, username_input, updated_fields)
+                st.success("Profil sauvegardé avec succès !")
+            else:
+                st.info("Aucune modification détectée.")
+ 
+            st.stop()
