@@ -3,6 +3,16 @@ import streamlit as st
 import requests
 import os
 from datetime import datetime
+
+# ─── Load env vars: Streamlit Cloud secrets → os.environ ──────────────────────
+# On Streamlit Cloud, secrets are in st.secrets; locally, use .env file
+try:
+    for key in ("QDRANT_URL", "QDRANT_API_KEY", "AIRFLOW_BASE_URL", "AIRFLOW_USER", "AIRFLOW_PASSWORD"):
+        if key in st.secrets:
+            os.environ[key] = st.secrets[key]
+except FileNotFoundError:
+    pass
+
 from utile import init_tools, get_user_profile, hash_password
 from profile_ai import show_profile_sidebar
 

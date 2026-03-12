@@ -11,11 +11,21 @@ def init_tools():
     """Initialisation du modèle et du client Qdrant."""
     model = SentenceTransformer("clip-ViT-B-32")
 
-    client = QdrantClient(
-        host="localhost",
-        port=6333,
-        timeout=120
-    )
+    qdrant_url = os.getenv("QDRANT_URL")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY")
+
+    if qdrant_url:
+        client = QdrantClient(
+            url=qdrant_url,
+            api_key=qdrant_api_key,
+            timeout=120,
+        )
+    else:
+        client = QdrantClient(
+            host="localhost",
+            port=6333,
+            timeout=120,
+        )
 
     # création collection profils si absente
     collections = [c.name for c in client.get_collections().collections]
