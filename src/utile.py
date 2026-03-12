@@ -7,19 +7,28 @@ import secrets
 from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from sentence_transformers import SentenceTransformer
 import streamlit as st
-@st.cache_resource
 
-# ---------------- INIT TOOLS ----------------
-def init_tools():
-    """Initialisation du modèle et du client Qdrant."""
-    model = SentenceTransformer("clip-ViT-B-32")
+
+# ---------------- SECRETS HELPER ----------------
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from st.secrets (Streamlit Cloud) then fall back to os.environ."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.environ.get(key, default)
+
+
+# ---------------- CACHED QDRANT CLIENT ----------------
+@st.cache_resource
+def get_qdrant_client():
+    """Qdrant client — created once, shared across sessions."""
+    qdrant_url = _get_secret("QDRANT_URL")
+    qdrant_api_key = _get_secret("QDRANT_API_KEY")
 
     if qdrant_url:
         client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=120)
     else:
-        # Local fallback for Docker / dev environments only
         client = QdrantClient(host="localhost", port=6333, timeout=120)
 
     # Auto-create collections if absent
@@ -34,20 +43,21 @@ def init_tools():
             collection_name="fashion_images",
             vectors_config=VectorParams(size=512, distance=Distance.COSINE),
         )
-
     return client
 
-# ---------------- CACHED CLIP MODEL (lazy) ----------------
+
+# ---------------- CACHED CLIP MODEL ----------------
 @st.cache_resource
 def get_model():
     """CLIP model — loaded once on first use, shared across sessions."""
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer("clip-ViT-B-32")
 
-# ---------------- INIT TOOLS (compat wrapper) ----------------
+
+# ---------------- INIT TOOLS ----------------
 def init_tools():
-    """Returns (model_loader, client). model_loader is callable — call get_model() when needed."""
-    return get_model, get_qdrant_client()
+    """Returns (model, client). Both are cached — fast on reload."""
+    return get_model(), get_qdrant_client()
 
 # ---------------- HASH PASSWORD (PBKDF2) ----------------
 def hash_password(password: str, salt: str | None = None) -> str:
@@ -155,27 +165,6 @@ def get_user_profile(client, username: str) -> dict | None:
         return None
 
 
-def init_tools():
-    model = SentenceTransformer("clip-ViT-B-32")
-
-    client = QdrantClient(
-        host="localhost",
-        port=6333,
-        timeout=120
-    )
-
-    collections = [c.name for c in client.get_collections().collections]
-
-    if "user_profiles" not in collections:
-        client.create_collection(
-            collection_name="user_profiles",
-            vectors_config=VectorParams(
-                size=512,
-                distance=Distance.COSINE
-            )
-        )
-
-    return model, client
 # ---------------- COLOR ADVICE ----------------
 def get_color_advice(teint: str) -> str:
     """Donne des conseils de couleurs en fonction du teint."""
