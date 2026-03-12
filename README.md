@@ -96,7 +96,23 @@ Placer les images dans `Data/catalog/`, puis au choix :
 ├── spark_jobs/            # Job PySpark (transform_catalog)
 ├── scripts/               # Scripts utilitaires (validate_export)
 ├── src/                   # Code applicatif (Streamlit, auth, search, etc.)
+│   └── .streamlit/        # Config Streamlit (thème, serveur)
 ├── Data/catalog/          # Images du catalogue
 ├── docker-compose.yml     # Stack complète
-└── requirements.txt       # Dépendances Python
+├── requirements.txt       # Dépendances Python (app)
+└── requirements-airflow.txt  # Dépendances Airflow/Spark (Linux only)
 ```
+
+## Déploiement — Streamlit Community Cloud
+
+1. **Push** le repo sur GitHub
+2. Aller sur [share.streamlit.io](https://share.streamlit.io)
+3. Cliquer **New app** → sélectionner le repo
+4. Configurer :
+   - **Main file path :** `src/app.py`
+   - **Python version :** 3.12
+5. Cliquer **Deploy**
+
+Le fichier `requirements.txt` à la racine est détecté automatiquement.
+
+L'app est **mobile-friendly** — elle s'adapte automatiquement aux écrans de téléphone via CSS responsive.
