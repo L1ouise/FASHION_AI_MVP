@@ -45,7 +45,10 @@ def show_signup_form(client, model):
             user_data["profile_img_file"] = photo
 
         save_profile_to_qdrant(client, model, pseudo, user_data, password=password)
-        st.success("Compte cree ! Connectez-vous avec votre pseudo.")
+        st.session_state.logged_in = True
+        st.session_state.username = pseudo
+        st.session_state.page = "home"
+        st.rerun()
 
 def show_profile_sidebar(client, model, username, user_profile=None, require_password=False):
     """

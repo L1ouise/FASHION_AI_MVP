@@ -40,7 +40,7 @@ st.markdown("""
     margin-bottom: 1rem;
     border: 1px solid rgba(201,168,76,0.15);
 }
-.nav-btn button {
+[data-testid="stSidebar"] button {
     text-align: left !important;
     border: none !important;
     border-radius: 8px !important;
@@ -49,8 +49,10 @@ st.markdown("""
     background: transparent !important;
     color: var(--text) !important;
     font-family: 'DM Sans', sans-serif !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
 }
-.nav-btn button:hover {
+[data-testid="stSidebar"] button:hover {
     background: rgba(201,168,76,0.12) !important;
 }
 </style>
@@ -110,24 +112,22 @@ with st.sidebar:
 
     # Navigation
     pages = {
-        "home": "Accueil",
-        "search": "Recherche",
-        "looks": "Looks",
-        "vton": "Essayage Virtuel",
-        "favorites": "Favoris",
-        "analytics": "Analytics",
-        "profile": "Mon Profil",
+        "home": "\U0001F3E0  Accueil",
+        "search": "\U0001F50D  Recherche",
+        "looks": "\U0001F457  Looks",
+        "vton": "\U0001FA9E  Essayage Virtuel",
+        "favorites": "\u2764\uFE0F  Favoris",
+        "analytics": "\U0001F4CA  Analytics",
+        "profile": "\U0001F464  Mon Profil",
     }
 
-    st.markdown('<div class="nav-btn">', unsafe_allow_html=True)
     for key, label in pages.items():
         if st.button(label, key=f"nav_{key}", use_container_width=True):
             st.session_state.page = key
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
-    if st.button("Deconnexion", use_container_width=True):
+    if st.button("\U0001F6AA  Deconnexion", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.rerun()
@@ -148,6 +148,7 @@ if page == "home":
     with c1:
         st.markdown("""
         <div class="fa-card" style="text-align:center;">
+            <p style="font-size:2rem;">🔍</p>
             <p style="color:var(--accent);font-size:1.3rem;font-weight:700;">Recherche</p>
             <p style="color:var(--muted);font-size:0.85rem;">Trouvez des vetements par texte ou image</p>
         </div>
@@ -155,6 +156,7 @@ if page == "home":
     with c2:
         st.markdown("""
         <div class="fa-card" style="text-align:center;">
+            <p style="font-size:2rem;">👗</p>
             <p style="color:var(--accent);font-size:1.3rem;font-weight:700;">Looks</p>
             <p style="color:var(--muted);font-size:0.85rem;">Generez des tenues adaptees a votre profil</p>
         </div>
@@ -162,6 +164,7 @@ if page == "home":
     with c3:
         st.markdown("""
         <div class="fa-card" style="text-align:center;">
+            <p style="font-size:2rem;">🪞</p>
             <p style="color:var(--accent);font-size:1.3rem;font-weight:700;">Essayage</p>
             <p style="color:var(--muted);font-size:0.85rem;">Essayez virtuellement sur votre silhouette</p>
         </div>
@@ -181,26 +184,37 @@ elif page == "vton":
 
 # ── FAVORITES ─────────────────────────────────────────────────────────────────
 elif page == "favorites":
-    st.markdown("## Mes Favoris")
+    st.markdown("## \u2764\uFE0F Mes Favoris")
     fav_ids = get_favorites(client, username)
     if not fav_ids:
-        st.info("Vous n'avez pas encore de favoris. Explorez le catalogue et sauvegardez des articles.")
+        st.info("Vous n'avez pas encore de favoris. Explorez le catalogue et sauvegardez des articles \U0001F50D")
     else:
         try:
+            # Ensure IDs are proper type (int or str) matching Qdrant point IDs
+            safe_ids = []
+            for fid in fav_ids:
+                try:
+                    safe_ids.append(int(fid))
+                except (ValueError, TypeError):
+                    safe_ids.append(str(fid))
             points = client.retrieve(
                 collection_name="fashion_images",
-                ids=fav_ids,
+                ids=safe_ids,
                 with_payload=True,
             )
-        except Exception:
+        except Exception as e:
             points = []
-            st.error("Erreur de connexion a la base vectorielle.")
+            st.error(f"Erreur lors du chargement des favoris : {e}")
         if points:
             cols = st.columns(min(len(points), 4))
             for i, pt in enumerate(points):
                 with cols[i % 4]:
                     display_image(pt.payload, use_container_width=True)
-                    st.caption(pt.payload.get("filename", ""))
+                    name = pt.payload.get("filename", pt.payload.get("nom", ""))
+                    if name:
+                        st.caption(name)
+        elif not points and fav_ids:
+            st.warning("Les articles favoris n'ont pas ete trouves dans le catalogue.")
 
 # ── ANALYTICS ─────────────────────────────────────────────────────────────────
 elif page == "analytics":
