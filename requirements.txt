@@ -9,6 +9,8 @@ plotly>=5.20.0
 pandas>=2.0.0
 scikit-learn>=1.4.0
 requests>=2.31.0
+rembg>=2.0.0
+onnxruntime>=1.17.0
 
 # Airflow & Spark — install only in WSL2/Docker/Linux (NOT native Windows)
 # See requirements-airflow.txt

@@ -1,188 +1,202 @@
-# app.py
+# app.py  —  Fashion AI · Luxury mobile-first entrypoint
 import streamlit as st
 import requests
-import os
-import io
-import base64
 from datetime import datetime
 
-# ─── Load env vars: Streamlit Cloud secrets → os.environ ──────────────────────
-try:
-    for key in ("QDRANT_URL", "QDRANT_API_KEY", "AIRFLOW_BASE_URL", "AIRFLOW_USER", "AIRFLOW_PASSWORD"):
-        if key in st.secrets:
-            os.environ[key] = st.secrets[key]
-except FileNotFoundError:
-    pass
+from utile import (
+    _get_secret,
+    init_tools,
+    get_user_profile,
+    get_favorites,
+    toggle_favorite,
+    display_image,
+)
 
-from utile import init_tools, get_user_profile, hash_password, verify_password, get_model, toggle_favorite, get_favorites, username_exists
-from profile_ai import show_profile_sidebar
 
-# ─── Airflow config ───────────────────────────────────────────────────────────
-AIRFLOW_BASE_URL = os.getenv("AIRFLOW_BASE_URL", "http://localhost:8080")
-AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
-AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "admin")
+# ─── Airflow config (graceful if unreachable) ────────────────────────────────
+AIRFLOW_BASE_URL = _get_secret("AIRFLOW_BASE_URL", "")
+AIRFLOW_USER = _get_secret("AIRFLOW_USER", "admin")
+AIRFLOW_PASSWORD = _get_secret("AIRFLOW_PASSWORD", "admin")
 DAG_ID = "fashion_pipeline"
 
-# ─── Page config (must be first st call) ──────────────────────────────────────
+
+# ─── Page config (must be first st.* call) ───────────────────────────────────
 st.set_page_config(
     page_title="Fashion AI",
-    page_icon="👗",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ─── CSS ──────────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DESIGN SYSTEM — Dark luxury CSS
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
-    /* ─── Hide default Streamlit chrome ─── */
-    #MainMenu, footer, header {visibility: hidden;}
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');
 
-    /* ─── Global ─── */
-    .block-container {
-        padding: 1.5rem 1.5rem 5rem 1.5rem !important;
-        max-width: 900px !important;
-        margin: 0 auto;
-    }
+:root {
+  --bg:       #1a1a2e;
+  --surface:  #16213e;
+  --card:     #0f3460;
+  --accent:   #c9a84c;
+  --blush:    #e8c4b8;
+  --text:     #f5f0e8;
+  --muted:    #9a9080;
+  --radius:   12px;
+  --shadow:   0 4px 24px rgba(0,0,0,0.4);
+}
 
-    /* ─── Buttons ─── */
-    .stButton > button, .stFormSubmitButton > button {
-        width: 100%;
-        min-height: 48px;
-        font-size: 1rem;
-        font-weight: 600;
-        border-radius: 12px;
-        transition: transform 0.1s, box-shadow 0.2s;
-    }
-    .stButton > button:active {
-        transform: scale(0.97);
-    }
+html, body, [data-testid="stAppViewContainer"] {
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+  font-family: 'DM Sans', sans-serif;
+}
 
-    /* ─── Primary action button ─── */
-    .stFormSubmitButton > button {
-        background: linear-gradient(135deg, #FF4B6E, #FF8E53) !important;
-        color: white !important;
-        border: none !important;
-    }
+h1, h2, h3 { font-family: 'Playfair Display', serif; color: var(--accent); }
 
-    /* ─── Inputs ─── */
-    .stTextInput > div > div > input,
-    .stNumberInput > div > div > input {
-        font-size: 1rem;
-        min-height: 44px;
-        border-radius: 10px;
-    }
-    .stSelectbox > div > div { min-height: 44px; }
+/* Hide default Streamlit chrome */
+#MainMenu, footer, header { visibility: hidden; }
+[data-testid="stSidebar"] { display: none !important; }
 
-    /* ─── Tabs ─── */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0;
-        justify-content: center;
-    }
-    .stTabs [data-baseweb="tab"] {
-        min-height: 48px;
-        font-size: 1rem;
-        font-weight: 600;
-        padding: 0.6rem 2rem;
-        border-radius: 12px 12px 0 0;
-    }
+/* Mobile-first container */
+.block-container {
+  padding: 0 16px 80px 16px !important;
+  max-width: 480px !important;
+  margin: 0 auto !important;
+}
 
-    /* ─── Image cards ─── */
-    [data-testid="stImage"] {
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-        transition: transform 0.2s;
-    }
-    [data-testid="stImage"]:hover {
-        transform: translateY(-2px);
-    }
+/* Cards */
+.fa-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(201,168,76,0.15);
+}
 
-    /* ─── Sidebar profile image ─── */
-    [data-testid="stSidebar"] img {
-        border-radius: 50%;
-        max-width: 100px;
-        margin: 0 auto;
-        display: block;
-        border: 3px solid #FF4B6E;
-    }
+/* Buttons */
+.stButton > button {
+  background: var(--accent) !important;
+  color: var(--bg) !important;
+  border: none !important;
+  border-radius: 8px !important;
+  font-family: 'DM Sans', sans-serif !important;
+  font-weight: 500 !important;
+  padding: 12px 24px !important;
+  width: 100% !important;
+  min-height: 44px !important;
+  transition: transform 0.1s;
+}
+.stButton > button:active { transform: scale(0.97); }
 
-    /* ─── Login page ─── */
-    .login-header {
-        text-align: center;
-        margin-bottom: 1.5rem;
-    }
-    .login-header h1 {
-        font-size: 2.2rem;
-        margin-bottom: 0.25rem;
-    }
-    .login-header p {
-        color: #888;
-        font-size: 1rem;
-    }
+.stFormSubmitButton > button {
+  background: var(--accent) !important;
+  color: var(--bg) !important;
+  border: none !important;
+  border-radius: 8px !important;
+  font-family: 'DM Sans', sans-serif !important;
+  font-weight: 600 !important;
+  min-height: 44px !important;
+  width: 100% !important;
+}
 
-    /* ─── Welcome banner ─── */
-    .welcome-banner {
-        background: linear-gradient(135deg, #FF4B6E 0%, #FF8E53 100%);
-        color: white;
-        padding: 1.2rem 1.5rem;
-        border-radius: 16px;
-        margin-bottom: 1.5rem;
-    }
-    .welcome-banner h2 {
-        margin: 0;
-        font-size: 1.3rem;
-        color: white;
-    }
-    .welcome-banner p {
-        margin: 0.2rem 0 0 0;
-        opacity: 0.9;
-        font-size: 0.9rem;
-    }
+/* Inputs */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input {
+  font-size: 1rem;
+  min-height: 44px;
+  border-radius: 10px;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border-color: rgba(201,168,76,0.3) !important;
+}
+.stSelectbox > div > div { min-height: 44px; }
 
-    /* ─── Feature cards ─── */
-    .feature-card {
-        background: white;
-        border: 1px solid #f0f0f0;
-        border-radius: 16px;
-        padding: 1.5rem;
-        text-align: center;
-        transition: transform 0.2s, box-shadow 0.2s;
-        min-height: 140px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-    }
-    .feature-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    }
-    .feature-card .icon { font-size: 2.2rem; margin-bottom: 0.5rem; }
-    .feature-card .label { font-weight: 600; font-size: 1rem; color: #1a1a2e; }
-    .feature-card .desc { font-size: 0.8rem; color: #888; margin-top: 0.3rem; }
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] { gap: 0; justify-content: center; }
+.stTabs [data-baseweb="tab"] {
+  min-height: 44px; font-size: 0.95rem; font-weight: 500;
+  padding: 0.5rem 1.5rem; border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--muted); font-family: 'DM Sans', sans-serif;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] { color: var(--accent); }
 
-    /* ─── Mobile ─── */
-    @media (max-width: 640px) {
-        .block-container {
-            padding: 1rem 0.75rem 5rem 0.75rem !important;
-        }
-        [data-testid="column"] {
-            width: 50% !important;
-            flex: 0 0 50% !important;
-            min-width: 0 !important;
-        }
-        h1 { font-size: 1.5rem !important; }
-        h2 { font-size: 1.2rem !important; }
-        .welcome-banner h2 { font-size: 1.1rem; }
-        .feature-card { min-height: 110px; padding: 1rem; }
-        .feature-card .icon { font-size: 1.8rem; }
-    }
+/* Image cards */
+[data-testid="stImage"] {
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  transition: transform 0.2s;
+}
+[data-testid="stImage"]:hover { transform: translateY(-2px); }
+
+/* Metrics */
+[data-testid="stMetricValue"] { color: var(--accent) !important; font-family: 'Playfair Display', serif; }
+[data-testid="stMetricLabel"] { color: var(--muted) !important; }
+
+/* Sticky header */
+.fa-header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+  background: rgba(26,26,46,0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(201,168,76,0.2);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; height: 56px;
+}
+.fa-logo { font-family:'Playfair Display',serif; font-size:22px; color:#c9a84c; font-weight:700; }
+.fa-nav-icons { display:flex; gap:16px; }
+.fa-nav-icons svg { width:22px; height:22px; stroke:#f5f0e8; cursor:pointer; }
+/* Push content below fixed header */
+[data-testid="stAppViewContainer"] > div:first-child { padding-top: 64px !important; }
+
+/* Feature cards (home page) */
+.feature-card {
+  background: var(--surface);
+  border: 1px solid rgba(201,168,76,0.15);
+  border-radius: var(--radius);
+  padding: 1.2rem;
+  text-align: center;
+  transition: transform 0.2s, box-shadow 0.2s;
+  min-height: 120px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.feature-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 24px rgba(201,168,76,0.15);
+}
+.feature-card .label { font-weight: 600; font-size: 1rem; color: var(--accent); font-family: 'Playfair Display', serif; }
+.feature-card .desc { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
+
+/* Welcome banner */
+.welcome-banner {
+  background: linear-gradient(135deg, var(--surface) 0%, var(--card) 100%);
+  border: 1px solid rgba(201,168,76,0.2);
+  padding: 1.2rem 1.5rem;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+.welcome-banner h2 { margin: 0; font-size: 1.2rem; color: var(--accent); }
+.welcome-banner p  { margin: 0.2rem 0 0 0; color: var(--muted); font-size: 0.9rem; }
+
+/* Mobile tweaks */
+@media (max-width: 640px) {
+  .block-container { padding: 0 10px 80px 10px !important; }
+  [data-testid="column"] { width: 50% !important; flex: 0 0 50% !important; min-width: 0 !important; }
+  h1 { font-size: 1.5rem !important; }
+  h2 { font-size: 1.2rem !important; }
+  .feature-card { min-height: 100px; padding: 0.8rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
+
 # ─── Init ─────────────────────────────────────────────────────────────────────
 model, client = init_tools()
+
 
 # ─── Session state ────────────────────────────────────────────────────────────
 if "logged_in" not in st.session_state:
@@ -192,118 +206,74 @@ if "page" not in st.session_state:
     st.session_state.page = "home"
 if "favorites" not in st.session_state:
     st.session_state.favorites = set()
+if "search_history" not in st.session_state:
+    st.session_state.search_history = []
 
 
 def go_to(page):
     st.session_state.page = page
 
 
-def display_image(payload, **kwargs):
-    """Display an image from Qdrant payload: prefers base64 thumbnail, falls back to path."""
-    b64 = payload.get("thumb_b64")
-    if b64:
-        st.image(f"data:image/jpeg;base64,{b64}", **kwargs)
-    else:
-        path = payload.get("path", payload.get("image_path", ""))
-        if path:
-            st.image(path, **kwargs)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  LOGIN / SIGNUP
+#  AUTH GATE
 # ══════════════════════════════════════════════════════════════════════════════
 if not st.session_state.logged_in:
-
-    st.markdown("""
-    <div class="login-header">
-        <h1>👗 Fashion AI</h1>
-        <p>Votre assistant mode intelligent</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    tab_login, tab_signup = st.tabs(["Connexion", "Créer un compte"])
-
-    with tab_login:
-        with st.form("login_form"):
-            username_input = st.text_input("Nom d'utilisateur", placeholder="Entrez votre pseudo")
-            password_input = st.text_input("Mot de passe", type="password", placeholder="••••••••")
-            st.markdown("")  # spacer
-            login_submitted = st.form_submit_button("Se connecter")
-
-        if login_submitted:
-            if not username_input or not password_input:
-                st.warning("Veuillez remplir tous les champs.")
-            else:
-                user_profile = get_user_profile(client, username_input)
-                if user_profile and "password" in user_profile:
-                    if verify_password(password_input, user_profile["password"]):
-                        st.session_state.logged_in = True
-                        st.session_state.username = username_input
-                        st.session_state.page = "home"
-                        st.rerun()
-                    else:
-                        st.error("Mot de passe incorrect.")
-                else:
-                    st.error("Utilisateur non trouvé.")
-
-    with tab_signup:
-        show_profile_sidebar(client, model, username="", user_profile=None, require_password=True)
+    from auth import render_login_page
+    render_login_page(client, model)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DASHBOARD (logged in)
+#  MAIN APP (logged in)
 # ══════════════════════════════════════════════════════════════════════════════
 else:
     username = st.session_state.username
     user_profile = get_user_profile(client, username) or {}
-    # Profile image: prefer base64, fallback to path
-    profile_img_b64 = user_profile.get("profile_img_b64")
-    profile_img_path = user_profile.get("profile_img_path")
     prenom = user_profile.get("prenom", username)
 
     # Load favorites into session
     if not st.session_state.favorites:
         st.session_state.favorites = set(get_favorites(client, username))
 
-    # ──── Sidebar ─────────────────────────────────────────────────────────────
-    with st.sidebar:
-        if profile_img_b64:
-            st.image(f"data:image/jpeg;base64,{profile_img_b64}", width=100)
-        elif profile_img_path:
-            st.image(profile_img_path, width=100)
-        st.markdown(f"### {prenom}")
-        st.caption(f"@{username}")
-        st.divider()
+    # ─── Sticky header HTML ──────────────────────────────────────────────
+    st.markdown("""
+    <div class="fa-header">
+      <span class="fa-logo">FA</span>
+      <span style="font-family:'Playfair Display',serif;font-size:16px;color:#f5f0e8;">Fashion AI</span>
+      <div class="fa-nav-icons">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        if st.button("🏠 Accueil", use_container_width=True):
-            go_to("home")
-            st.rerun()
-        if st.button("🔍 Recherche", use_container_width=True):
-            go_to("search")
-            st.rerun()
-        if st.button("✨ Look Generator", use_container_width=True):
-            go_to("looks")
-            st.rerun()
-        if st.button("❤️ Favoris", use_container_width=True):
-            go_to("favorites")
-            st.rerun()
-        if st.button("📊 Analytics", use_container_width=True):
-            go_to("analytics")
-            st.rerun()
-        if st.button("⚙️ Pipeline", use_container_width=True):
-            go_to("pipeline")
+    # ─── Functional navigation bar (st.buttons under the header) ─────────
+    nav_cols = st.columns(7)
+    nav_items = [
+        ("Accueil", "home"),
+        ("Recherche", "search"),
+        ("Looks", "looks"),
+        ("Essayage", "vton"),
+        ("Favoris", "favorites"),
+        ("Stats", "analytics"),
+        ("Profil", "profile"),
+    ]
+    for i, (label, page_key) in enumerate(nav_items):
+        if nav_cols[i].button(label, key=f"nav_{page_key}", use_container_width=True):
+            go_to(page_key)
             st.rerun()
 
-        st.divider()
+    # Pipeline and logout in a slim row
+    aux_cols = st.columns([1, 1, 2])
+    if aux_cols[0].button("Pipeline", key="nav_pipeline", use_container_width=True):
+        go_to("pipeline")
+        st.rerun()
+    if aux_cols[1].button("Deconnexion", key="nav_logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.page = "home"
+        st.session_state.favorites = set()
+        st.rerun()
 
-        with st.expander("✏️ Modifier mon profil"):
-            show_profile_sidebar(client, model, username, user_profile=user_profile, require_password=False)
-
-        st.markdown("")
-        if st.button("🚪 Déconnexion", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = ""
-            st.session_state.page = "home"
-            st.rerun()
+    st.markdown("---")
 
     page = st.session_state.page
 
@@ -313,44 +283,39 @@ else:
     if page == "home":
         st.markdown(f"""
         <div class="welcome-banner">
-            <div>
-                <h2>Bonjour, {prenom} 👋</h2>
-                <p>Que souhaitez-vous faire aujourd'hui ?</p>
-            </div>
+            <h2>Bonjour, {prenom}</h2>
+            <p>Que souhaitez-vous faire aujourd'hui ?</p>
         </div>
         """, unsafe_allow_html=True)
 
-        # ─── Profile completeness ─────────────────────────────────────────
+        # Profile completeness
         profile_fields = ["nom", "prenom", "age", "taille", "teint", "morpho"]
-        has_img = bool(user_profile.get("profile_img_b64") or user_profile.get("profile_img_path"))
+        has_img = bool(user_profile.get("profile_img_b64"))
         filled = sum(1 for f in profile_fields if user_profile.get(f)) + (1 if has_img else 0)
         pct = int(filled / (len(profile_fields) + 1) * 100)
         if pct < 100:
-            st.progress(pct / 100, text=f"Profil complété à {pct}%")
-            st.caption("Complétez votre profil pour de meilleures recommandations.")
+            st.progress(pct / 100, text=f"Profil complete a {pct}%")
+            st.caption("Completez votre profil pour de meilleures recommandations.")
 
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("""
             <div class="feature-card">
-                <div class="icon">🔍</div>
                 <div class="label">Recherche</div>
-                <div class="desc">Trouvez des pièces par texte</div>
+                <div class="desc">Trouvez des pieces par texte, categorie ou image</div>
             </div>
             """, unsafe_allow_html=True)
-            if st.button("Ouvrir la recherche", key="nav_search"):
+            if st.button("Ouvrir", key="home_search"):
                 go_to("search")
                 st.rerun()
-
         with c2:
             st.markdown("""
             <div class="feature-card">
-                <div class="icon">✨</div>
                 <div class="label">Look Generator</div>
-                <div class="desc">Créez des tenues assorties</div>
+                <div class="desc">Creez des tenues assorties a votre morphologie</div>
             </div>
             """, unsafe_allow_html=True)
-            if st.button("Créer un look", key="nav_looks"):
+            if st.button("Creer un look", key="home_looks"):
                 go_to("looks")
                 st.rerun()
 
@@ -358,145 +323,50 @@ else:
         with c3:
             st.markdown("""
             <div class="feature-card">
-                <div class="icon">❤️</div>
-                <div class="label">Favoris</div>
-                <div class="desc">Vos pièces sauvegardées</div>
+                <div class="label">Essayage Virtuel</div>
+                <div class="desc">Visualisez les vetements sur un mannequin</div>
             </div>
             """, unsafe_allow_html=True)
-            if st.button("Mes favoris", key="nav_favorites"):
-                go_to("favorites")
+            if st.button("Essayer", key="home_vton"):
+                go_to("vton")
                 st.rerun()
-
         with c4:
             st.markdown("""
             <div class="feature-card">
-                <div class="icon">📊</div>
                 <div class="label">Analytics</div>
-                <div class="desc">Analysez votre style</div>
+                <div class="desc">Analysez votre style et le catalogue</div>
             </div>
             """, unsafe_allow_html=True)
-            if st.button("Voir les stats", key="nav_analytics"):
+            if st.button("Statistiques", key="home_analytics"):
                 go_to("analytics")
                 st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  SEARCH
+    #  SEARCH (delegated to module)
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "search":
-        if st.button("← Accueil", key="back_search"):
-            go_to("home")
-            st.rerun()
-        st.markdown("## 🔍 Recherche Mode")
-
-        # Quick filters
-        categories = ["Robe", "Veste", "Pantalon", "Jupe", "Manteau", "T-shirt", "Chaussures"]
-        filter_cols = st.columns(len(categories))
-        selected_cat = ""
-        for i, cat in enumerate(categories):
-            if filter_cols[i].button(cat, key=f"cat_{cat}"):
-                selected_cat = cat
-
-        q = st.text_input(
-            "Décrivez ce que vous cherchez",
-            value=selected_cat,
-            placeholder="Ex: robe rouge élégante, veste en cuir noire...",
-            label_visibility="collapsed",
-        )
-
-        if q:
-            with st.spinner("Recherche en cours..."):
-                vec = model().encode(q).tolist()
-                try:
-                    res = client.search(collection_name="fashion_images", query_vector=vec, limit=6)
-                except Exception:
-                    res = []
-                    st.error("Erreur de connexion à la base vectorielle. Le catalogue n'est peut-être pas encore indexé.")
-
-            if res:
-                st.caption(f"{len(res)} résultats pour « {q} »")
-                cols = st.columns(2)
-                for i, h in enumerate(res):
-                    with cols[i % 2]:
-                        display_image(h.payload, use_container_width=True)
-                        point_id = str(h.id)
-                        is_fav = point_id in st.session_state.favorites
-                        label = "💔 Retirer" if is_fav else "❤️ Favoris"
-                        if st.button(label, key=f"fav_s_{point_id}"):
-                            toggle_favorite(client, username, point_id)
-                            if is_fav:
-                                st.session_state.favorites.discard(point_id)
-                            else:
-                                st.session_state.favorites.add(point_id)
-                            st.rerun()
-            else:
-                st.info("Aucun résultat trouvé. Essayez d'autres mots-clés.")
-        else:
-            st.caption("Tapez un mot-clé pour lancer la recherche sémantique dans le catalogue.")
+        from search import render as search_render
+        search_render(client, model, user_profile, username)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  LOOK GENERATOR
+    #  LOOK GENERATOR (delegated to module)
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "looks":
-        if st.button("← Accueil", key="back_looks"):
-            go_to("home")
-            st.rerun()
-        st.markdown("## ✨ Salon d'Essayage")
-
-        from utile import get_color_advice
-        teint = user_profile.get("teint", "Clair / Pâle")
-        st.info(f"💡 {get_color_advice(teint)}")
-
-        img = st.file_uploader(
-            "Uploader une pièce ou utiliser votre photo",
-            type=["png", "jpg", "jpeg"],
-            help="L'IA trouvera des pièces assorties",
-        )
-        source_img = img
-        if not source_img and profile_img_b64:
-            source_img = io.BytesIO(base64.b64decode(profile_img_b64))
-        elif not source_img and profile_img_path:
-            source_img = profile_img_path
-
-        if source_img:
-            with st.spinner("Génération du look..."):
-                vec = model().encode(source_img).tolist()
-                try:
-                    res = client.search(collection_name="fashion_images", query_vector=vec, limit=5)
-                except Exception:
-                    res = []
-                    st.error("Erreur de connexion à la base vectorielle. Le catalogue n'est peut-être pas encore indexé.")
-
-            if res:
-                st.markdown("**Pièce principale**")
-                display_image(res[0].payload, use_container_width=True)
-
-                st.markdown("**Suggestions assorties**")
-                cols = st.columns(2)
-                for i, h in enumerate(res[1:]):
-                    with cols[i % 2]:
-                        display_image(h.payload, use_container_width=True)
-                        point_id = str(h.id)
-                        is_fav = point_id in st.session_state.favorites
-                        label = "💔 Retirer" if is_fav else "❤️ Favoris"
-                        if st.button(label, key=f"fav_l_{point_id}"):
-                            toggle_favorite(client, username, point_id)
-                            if is_fav:
-                                st.session_state.favorites.discard(point_id)
-                            else:
-                                st.session_state.favorites.add(point_id)
-                            st.rerun()
-        else:
-            st.caption("Uploadez une image ou ajoutez une photo de profil pour commencer.")
+        from look_generator import render as looks_render
+        looks_render(client, model, user_profile, username)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  FAVORITES
+    #  VIRTUAL TRY-ON (delegated to module)
+    # ══════════════════════════════════════════════════════════════════════════
+    elif page == "vton":
+        from vton import render as vton_render
+        vton_render(client, model, user_profile, username)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  FAVORITES (inline — simple)
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "favorites":
-        if st.button("← Accueil", key="back_favorites"):
-            go_to("home")
-            st.rerun()
-        st.markdown("## ❤️ Mes Favoris")
-
+        st.markdown("## Mes Favoris")
         fav_ids = list(st.session_state.favorites)
         if fav_ids:
             try:
@@ -505,160 +375,109 @@ else:
                 fav_points = []
 
             if fav_points:
-                st.caption(f"{len(fav_points)} article(s) sauvegardé(s)")
+                st.caption(f"{len(fav_points)} article(s) sauvegarde(s)")
                 cols = st.columns(2)
                 for i, pt in enumerate(fav_points):
                     with cols[i % 2]:
                         display_image(pt.payload, use_container_width=True)
-                        if st.button("💔 Retirer", key=f"unfav_{pt.id}"):
+                        if st.button("Retirer", key=f"unfav_{pt.id}"):
                             toggle_favorite(client, username, str(pt.id))
                             st.session_state.favorites.discard(str(pt.id))
                             st.rerun()
             else:
-                st.info("Vos favoris n'ont pas pu être chargés.")
+                st.info("Vos favoris n'ont pas pu etre charges.")
         else:
-            st.info("Vous n'avez pas encore de favoris. Explorez le catalogue et sauvegardez des pièces !")
+            st.info("Vous n'avez pas encore de favoris. Explorez le catalogue et sauvegardez des pieces.")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  ANALYTICS
+    #  ANALYTICS (delegated to module)
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "analytics":
-        if st.button("← Accueil", key="back_analytics"):
-            go_to("home")
-            st.rerun()
-        st.markdown("## 📊 Analyse du Catalogue")
-
-        import pandas as pd
-        import plotly.express as px
-        from sklearn.decomposition import PCA
-        from sklearn.cluster import KMeans
-
-        with st.spinner("Chargement des données..."):
-            try:
-                pts = client.scroll(collection_name="fashion_images", with_vectors=True)[0]
-            except Exception:
-                pts = []
-                st.error("Erreur de connexion à la base vectorielle.")
-
-        if pts:
-            # ─── Key metrics row ──────────────────────────────────────────
-            m1, m2, m3 = st.columns(3)
-            m1.metric("📦 Articles", len(pts))
-            m2.metric("❤️ Favoris", len(st.session_state.favorites))
-            profile_fields = ["nom", "prenom", "age", "taille", "teint", "morpho"]
-            has_img = bool(user_profile.get("profile_img_b64") or user_profile.get("profile_img_path"))
-            pct = int((sum(1 for f in profile_fields if user_profile.get(f)) + (1 if has_img else 0)) / (len(profile_fields) + 1) * 100)
-            m3.metric("👤 Profil", f"{pct}%")
-
-            st.divider()
-
-            # ─── PCA scatter with clusters ────────────────────────────────
-            vecs = [p.vector for p in pts]
-            n_clusters = min(5, len(pts))
-            pca = PCA(n_components=2).fit_transform(vecs)
-            clusters = KMeans(n_clusters=n_clusters, n_init=10, random_state=42).fit_predict(vecs)
-            df = pd.DataFrame(pca, columns=["x", "y"])
-            df["cluster"] = [f"Groupe {c+1}" for c in clusters]
-
-            fig = px.scatter(
-                df, x="x", y="y", color="cluster",
-                title="Distribution du catalogue (PCA + Clusters)",
-                color_discrete_sequence=px.colors.qualitative.Set2,
-            )
-            fig.update_layout(
-                margin=dict(l=10, r=10, t=40, b=10),
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(showgrid=False),
-                yaxis=dict(showgrid=False),
-                legend_title_text="",
-            )
-            fig.update_traces(marker=dict(size=8, opacity=0.7))
-            st.plotly_chart(fig, use_container_width=True)
-
-            # ─── Style summary ────────────────────────────────────────────
-            st.divider()
-            st.markdown("### 👤 Votre profil style")
-            from utile import get_color_advice
-            teint = user_profile.get("teint", "Clair / Pâle")
-            morpho = user_profile.get("morpho", "A")
-            st.markdown(f"**Morphologie :** {morpho} &emsp; **Teint :** {teint}")
-            st.info(f"💡 {get_color_advice(teint)}")
-        else:
-            st.info("Le catalogue est vide. Lancez le pipeline pour indexer des images.")
+        from analytic import render as analytics_render
+        analytics_render(client, model, user_profile, username)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  PIPELINE ADMIN
+    #  PROFILE (delegated to module)
+    # ══════════════════════════════════════════════════════════════════════════
+    elif page == "profile":
+        from profile_ai import render as profile_render
+        profile_render(client, model, user_profile, username)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PIPELINE ADMIN (inline, graceful Airflow fallback)
     # ══════════════════════════════════════════════════════════════════════════
     elif page == "pipeline":
-        if st.button("← Accueil", key="back_pipeline"):
-            go_to("home")
-            st.rerun()
-        st.markdown("## ⚙️ Pipeline Airflow")
+        st.markdown("## Pipeline Airflow")
 
-        col1, col2 = st.columns(2)
+        if not AIRFLOW_BASE_URL:
+            st.info("Pipeline orchestration non configuree — AIRFLOW_BASE_URL absent des secrets.")
+        else:
+            col1, col2 = st.columns(2)
 
-        with col1:
-            if st.button("▶️ Lancer le pipeline", use_container_width=True):
-                run_id = f"manual__{datetime.utcnow().isoformat()}"
-                try:
-                    response = requests.post(
-                        f"{AIRFLOW_BASE_URL}/api/v1/dags/{DAG_ID}/dagRuns",
-                        json={"dag_run_id": run_id},
-                        auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
-                        timeout=10,
-                    )
-                    if response.status_code == 200:
-                        st.success("Pipeline lancé !")
-                    else:
-                        st.error(f"Erreur : {response.text}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Airflow non joignable.")
-
-        with col2:
-            if st.button("🔄 Rafraîchir le statut", use_container_width=True):
-                try:
-                    response = requests.get(
-                        f"{AIRFLOW_BASE_URL}/api/v1/dags/{DAG_ID}/dagRuns"
-                        "?limit=1&order_by=-execution_date",
-                        auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
-                        timeout=10,
-                    )
-                    if response.status_code == 200:
-                        runs = response.json().get("dag_runs", [])
-                        if runs:
-                            last = runs[0]
-                            state = last["state"]
-                            icon = "🟢" if state == "success" else "🔴" if state == "failed" else "🟡"
-                            st.info(f"{icon} Dernier run : **{state}**")
+            with col1:
+                if st.button("Lancer le pipeline", use_container_width=True):
+                    run_id = f"manual__{datetime.utcnow().isoformat()}"
+                    try:
+                        response = requests.post(
+                            f"{AIRFLOW_BASE_URL}/api/v1/dags/{DAG_ID}/dagRuns",
+                            json={"dag_run_id": run_id},
+                            auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
+                            timeout=3,
+                        )
+                        if response.status_code == 200:
+                            st.success("Pipeline lance avec succes.")
                         else:
-                            st.info("Aucun run trouvé.")
+                            st.error(f"Erreur : {response.text}")
+                    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                        st.warning("Pipeline orchestration non disponible — Airflow est hors ligne.")
+
+            with col2:
+                if st.button("Rafraichir le statut", use_container_width=True):
+                    try:
+                        response = requests.get(
+                            f"{AIRFLOW_BASE_URL}/api/v1/dags/{DAG_ID}/dagRuns"
+                            "?limit=1&order_by=-execution_date",
+                            auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
+                            timeout=3,
+                        )
+                        if response.status_code == 200:
+                            runs = response.json().get("dag_runs", [])
+                            if runs:
+                                last = runs[0]
+                                state = last["state"]
+                                color = "var(--accent)" if state == "success" else "var(--blush)"
+                                st.markdown(
+                                    f'<div class="fa-card">Dernier run : <span style="color:{color};font-weight:600;">{state}</span></div>',
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.info("Aucun run trouve.")
+                        else:
+                            st.error(f"Erreur : {response.text}")
+                    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                        st.warning("Pipeline orchestration non disponible — Airflow est hors ligne.")
+
+            st.markdown("---")
+            st.markdown("**Historique recent**")
+
+            try:
+                response = requests.get(
+                    f"{AIRFLOW_BASE_URL}/api/v1/dags/{DAG_ID}/dagRuns"
+                    "?limit=5&order_by=-execution_date",
+                    auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
+                    timeout=3,
+                )
+                if response.status_code == 200:
+                    runs = response.json().get("dag_runs", [])
+                    if runs:
+                        for run in runs:
+                            state = run["state"]
+                            rid = run["dag_run_id"]
+                            date = run["start_date"] or "—"
+                            st.markdown(f"**{state}** — {rid} — {date}")
                     else:
-                        st.error(f"Erreur : {response.text}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Airflow non joignable.")
-
-        st.markdown("---")
-        st.markdown("**Historique récent**")
-
-        try:
-            response = requests.get(
-                f"{AIRFLOW_BASE_URL}/api/v1/dags/{DAG_ID}/dagRuns"
-                "?limit=5&order_by=-execution_date",
-                auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
-                timeout=10,
-            )
-            if response.status_code == 200:
-                runs = response.json().get("dag_runs", [])
-                if runs:
-                    for run in runs:
-                        state = run["state"]
-                        icon = "🟢" if state == "success" else "🔴" if state == "failed" else "🟡"
-                        rid = run["dag_run_id"]
-                        date = run["start_date"] or "—"
-                        st.markdown(f"{icon} &ensp; **{state}** &ensp; `{rid}` &ensp; {date}")
+                        st.caption("Aucun run dans l'historique.")
                 else:
-                    st.caption("Aucun run dans l'historique.")
-            else:
-                st.caption("Impossible de charger l'historique.")
-        except requests.exceptions.ConnectionError:
-            st.warning("Airflow non disponible — historique indisponible.")
+                    st.caption("Impossible de charger l'historique.")
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                st.warning("Pipeline orchestration non disponible — Airflow est hors ligne.")

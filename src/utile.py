@@ -9,43 +9,40 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 import streamlit as st
 
+
+# ---------------- SECRET HELPER ────────────────────────────────────────────────
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from st.secrets first (Streamlit Cloud), fall back to os.environ (local dev)."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.getenv(key, default)
+
+
 # ---------------- CACHED QDRANT CLIENT ----------------
 @st.cache_resource
 def get_qdrant_client():
     """Qdrant client — created once, shared across sessions."""
-    qdrant_url = os.getenv("QDRANT_URL")
-    qdrant_api_key = os.getenv("QDRANT_API_KEY")
+    qdrant_url = _get_secret("QDRANT_URL")
+    qdrant_api_key = _get_secret("QDRANT_API_KEY")
 
     if qdrant_url:
-        client = QdrantClient(
-            url=qdrant_url,
-            api_key=qdrant_api_key,
-            timeout=120,
-        )
+        client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=120)
     else:
-        client = QdrantClient(
-            host="localhost",
-            port=6333,
-            timeout=120,
-        )
+        # Local fallback for Docker / dev environments only
+        client = QdrantClient(host="localhost", port=6333, timeout=120)
 
-    # création collections si absentes
+    # Auto-create collections if absent
     collections = [c.name for c in client.get_collections().collections]
     if "user_profiles" not in collections:
         client.create_collection(
             collection_name="user_profiles",
-            vectors_config=VectorParams(
-                size=512,
-                distance=Distance.COSINE
-            )
+            vectors_config=VectorParams(size=512, distance=Distance.COSINE),
         )
     if "fashion_images" not in collections:
         client.create_collection(
             collection_name="fashion_images",
-            vectors_config=VectorParams(
-                size=512,
-                distance=Distance.COSINE
-            )
+            vectors_config=VectorParams(size=512, distance=Distance.COSINE),
         )
 
     return client
@@ -216,3 +213,15 @@ def toggle_favorite(client, username: str, point_id: str):
         payload={"favorites": favs},
         points=[user_id],
     )
+
+
+# ---------------- DISPLAY IMAGE HELPER ────────────────────────────────────────
+def display_image(payload, **kwargs):
+    """Display an image from Qdrant payload: prefers base64 thumbnail, falls back to path."""
+    b64 = payload.get("thumb_b64")
+    if b64:
+        st.image(f"data:image/jpeg;base64,{b64}", **kwargs)
+    else:
+        path = payload.get("path", payload.get("image_path", ""))
+        if path:
+            st.image(path, **kwargs)
