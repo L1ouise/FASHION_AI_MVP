@@ -8,6 +8,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ""
     AIRFLOW__WEBSERVER__SECRET_KEY: "fashion-ai-secret"
     AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+    QDRANT_URL: "http://qdrant:6333"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
@@ -17,6 +18,8 @@ x-airflow-common: &airflow-common
   depends_on:
     postgres:
       condition: service_healthy
+    qdrant:
+      condition: service_started
 
 services:
 
@@ -72,7 +75,10 @@ services:
       - redis
       - airflow-webserver
     environment:
+      QDRANT_URL: "http://qdrant:6333"
       AIRFLOW_BASE_URL: "http://airflow-webserver:8080"
+      AIRFLOW_USER: "admin"
+      AIRFLOW_PASSWORD: "admin"
 
 volumes:
   qdrant_storage:
