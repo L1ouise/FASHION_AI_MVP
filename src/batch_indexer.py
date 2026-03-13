@@ -14,9 +14,39 @@ Usage:
     python batch_indexer.py
 """
 import os
+import ssl
 import io
 import base64
 import uuid
+
+# ─── SSL workaround (corporate proxy with self-signed cert) ──────────────────
+os.environ["CURL_CA_BUNDLE"] = ""
+os.environ["REQUESTS_CA_BUNDLE"] = ""
+os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "0"
+ssl._create_default_https_context = ssl._create_unverified_context
+
+import httpx
+_orig_client_init = httpx.Client.__init__
+def _patched_client_init(self, *args, **kwargs):
+    kwargs["verify"] = False
+    _orig_client_init(self, *args, **kwargs)
+httpx.Client.__init__ = _patched_client_init
+
+_orig_async_init = httpx.AsyncClient.__init__
+def _patched_async_init(self, *args, **kwargs):
+    kwargs["verify"] = False
+    _orig_async_init(self, *args, **kwargs)
+httpx.AsyncClient.__init__ = _patched_async_init
+
+import requests
+requests.packages.urllib3.disable_warnings()
+_orig_request = requests.Session.request
+def _patched_request(self, *args, **kwargs):
+    kwargs.setdefault("verify", False)
+    return _orig_request(self, *args, **kwargs)
+requests.Session.request = _patched_request
+
 from PIL import Image
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
