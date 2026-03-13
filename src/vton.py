@@ -1,168 +1,312 @@
-# vton.py  —  Virtual Try-On page
+# vton.py  —  Virtual Try-On page (production rewrite)
+"""
+Virtual try-on with proper garment fitting:
+ 1. Background removal (rembg)
+ 2. Garment bounding-box crop (remove transparent margins)
+ 3. Normalised composition on a fixed internal canvas (600×900)
+ 4. Body-zone alignment per morphology (shoulders → hem)
+ 5. Responsive display via use_container_width
+ 6. Fully French UI
+"""
+from __future__ import annotations
+
+import base64
 import io
+import os
+
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from style_advisor import get_style_advisor
 
-# ─── Mannequin metadata (keyed by morpho) ────────────────────────────────────
-# In production, place actual PNGs in src/assets/mannequins/
-# Each entry maps to a silhouette image file.
-MANNEQUIN_MAP = {
-    "X": {"file": "mannequin_x.png", "label": "Sablier", "overlay_pos": (60, 120), "scale": 0.55},
-    "H": {"file": "mannequin_h.png", "label": "Rectangulaire", "overlay_pos": (55, 130), "scale": 0.55},
-    "A": {"file": "mannequin_a.png", "label": "Poire", "overlay_pos": (50, 125), "scale": 0.55},
-    "V": {"file": "mannequin_v.png", "label": "Triangle inverse", "overlay_pos": (55, 115), "scale": 0.55},
-    "O": {"file": "mannequin_o.png", "label": "Ronde", "overlay_pos": (50, 130), "scale": 0.55},
-}
+# ─── Internal composition canvas (fixed, device-independent) ─────────────────
+CANVAS_W, CANVAS_H = 600, 900
+SURFACE_COLOR = (22, 33, 62, 255)       # --surface #1a1a2e
+ACCENT_RGBA   = (201, 168, 76)          # --accent  #c9a84c
 
-# Default mannequin if morpho not set
 DEFAULT_MORPHO = "X"
 
+# ─── Body-zone map per morphology ────────────────────────────────────────────
+# All values are normalised ratios of the CANVAS (0.0 – 1.0).
+#   shoulder_y : top of garment overlay (ratio from canvas top)
+#   shoulder_w : garment width at shoulders (ratio of canvas width)
+#   waist_w    : garment width at waist (used for shape hint only)
+#   hip_w      : garment width at hips
+#   hem_y      : max bottom of garment (ratio from canvas top)
+MORPHO_ZONES = {
+    "X": {
+        "label": "Sablier",
+        "shoulder_y": 0.18, "shoulder_w": 0.52,
+        "waist_w": 0.38, "hip_w": 0.50,
+        "hem_y": 0.92,
+    },
+    "H": {
+        "label": "Rectangulaire",
+        "shoulder_y": 0.19, "shoulder_w": 0.50,
+        "waist_w": 0.48, "hip_w": 0.50,
+        "hem_y": 0.92,
+    },
+    "A": {
+        "label": "Poire",
+        "shoulder_y": 0.18, "shoulder_w": 0.46,
+        "waist_w": 0.44, "hip_w": 0.54,
+        "hem_y": 0.92,
+    },
+    "V": {
+        "label": "Triangle inverse",
+        "shoulder_y": 0.17, "shoulder_w": 0.56,
+        "waist_w": 0.44, "hip_w": 0.46,
+        "hem_y": 0.92,
+    },
+    "O": {
+        "label": "Ronde",
+        "shoulder_y": 0.18, "shoulder_w": 0.54,
+        "waist_w": 0.52, "hip_w": 0.54,
+        "hem_y": 0.92,
+    },
+}
+
+MANNEQUIN_FILES = {
+    "X": "mannequin_x.png",
+    "H": "mannequin_h.png",
+    "A": "mannequin_a.png",
+    "V": "mannequin_v.png",
+    "O": "mannequin_o.png",
+}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Image helpers
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _try_remove_background(image_bytes: bytes) -> Image.Image:
-    """Remove background using rembg (CPU). Falls back to raw image if unavailable."""
+    """Remove background via rembg. Falls back to raw RGBA on failure."""
     try:
         from rembg import remove
         output = remove(image_bytes)
         return Image.open(io.BytesIO(output)).convert("RGBA")
     except ImportError:
-        st.warning("Module rembg non installe — fond non supprime.")
+        st.warning("⚠ Module *rembg* non installé — le fond n'a pas été supprimé.")
         return Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     except Exception as e:
-        st.warning(f"Erreur suppression du fond : {e}")
+        st.warning(f"⚠ Erreur suppression du fond : {e}")
         return Image.open(io.BytesIO(image_bytes)).convert("RGBA")
 
 
-def _compose_vton(mannequin: Image.Image, clothing: Image.Image, position: tuple, scale: float) -> Image.Image:
-    """Overlay clothing PNG (transparent bg) onto mannequin."""
-    mannequin = mannequin.convert("RGBA")
-    w = int(mannequin.width * scale)
-    h = int(clothing.height * (w / clothing.width))
-    clothing_resized = clothing.resize((w, h), Image.LANCZOS)
+def _crop_to_content(img: Image.Image) -> Image.Image:
+    """Crop an RGBA image to its non-transparent bounding box."""
+    bbox = img.getbbox()          # (left, upper, right, lower) of non-zero alpha
+    if bbox is None:
+        return img
+    return img.crop(bbox)
+
+
+def _compose_vton(mannequin: Image.Image, garment: Image.Image, morpho: str) -> Image.Image:
+    """
+    Compose garment onto mannequin using body-zone alignment.
+
+    Steps:
+      1. Crop garment to its visible bounding box (remove transparent margins).
+      2. Scale garment width to the morphology's shoulder width on the canvas.
+      3. Cap garment height so it doesn't exceed hem_y.
+      4. Centre horizontally on the mannequin.
+      5. Place top edge at shoulder_y.
+    """
+    zones = MORPHO_ZONES.get(morpho, MORPHO_ZONES[DEFAULT_MORPHO])
+
+    # Work on the internal canvas size
+    mannequin = mannequin.convert("RGBA").resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+
+    # 1. Crop garment to its visible pixels
+    garment = _crop_to_content(garment.convert("RGBA"))
+    if garment.width == 0 or garment.height == 0:
+        return mannequin.convert("RGB")
+
+    # 2. Target garment width = shoulder_w × canvas width
+    target_w = int(zones["shoulder_w"] * CANVAS_W)
+    scale = target_w / garment.width
+    target_h = int(garment.height * scale)
+
+    # 3. Cap height so garment doesn't exceed hem_y
+    max_h = int((zones["hem_y"] - zones["shoulder_y"]) * CANVAS_H)
+    if target_h > max_h:
+        target_h = max_h
+        scale = target_h / garment.height
+        target_w = int(garment.width * scale)
+
+    garment_resized = garment.resize((target_w, target_h), Image.LANCZOS)
+
+    # 4. Position: centred horizontally, top at shoulder_y
+    x = (CANVAS_W - target_w) // 2
+    y = int(zones["shoulder_y"] * CANVAS_H)
+
+    # 5. Composite
     result = mannequin.copy()
-    result.paste(clothing_resized, position, clothing_resized)
+    result.paste(garment_resized, (x, y), garment_resized)
     return result.convert("RGB")
 
 
+# ─── Mannequin loading / generation ──────────────────────────────────────────
+
 def _generate_placeholder_mannequin(morpho: str) -> Image.Image:
-    """Generate a simple placeholder mannequin silhouette when asset files are missing."""
-    img = Image.new("RGBA", (300, 500), (22, 33, 62, 255))  # surface color
-    # Draw a simple silhouette shape (just a filled oval as placeholder)
-    from PIL import ImageDraw
+    """Procedural mannequin silhouette on the internal canvas."""
+    img = Image.new("RGBA", (CANVAS_W, CANVAS_H), SURFACE_COLOR)
     draw = ImageDraw.Draw(img)
+
+    cx = CANVAS_W // 2
+
     # Head
-    draw.ellipse([125, 20, 175, 70], fill=(201, 168, 76, 180))
-    # Body proportions vary by morpho
-    shapes = {
-        "X": [(100, 80, 200, 160), (120, 160, 180, 280), (95, 280, 205, 450)],
-        "H": [(105, 80, 195, 160), (105, 160, 195, 280), (105, 280, 195, 450)],
-        "A": [(115, 80, 185, 160), (110, 160, 190, 280), (85, 280, 215, 450)],
-        "V": [(90, 80, 210, 160), (105, 160, 195, 280), (110, 280, 190, 450)],
-        "O": [(95, 80, 205, 160), (90, 160, 210, 280), (100, 280, 200, 450)],
-    }
-    for rect in shapes.get(morpho, shapes["X"]):
-        draw.rounded_rectangle(rect, radius=15, fill=(201, 168, 76, 80))
+    head_r = 30
+    draw.ellipse(
+        [cx - head_r, 40, cx + head_r, 40 + head_r * 2],
+        fill=(*ACCENT_RGBA, 200),
+    )
+    # Neck
+    draw.rectangle([cx - 8, 100, cx + 8, 130], fill=(*ACCENT_RGBA, 140))
+
+    zones = MORPHO_ZONES.get(morpho, MORPHO_ZONES[DEFAULT_MORPHO])
+
+    # Torso segments: shoulders → waist → hips → hem
+    segments = [
+        (0.15, zones["shoulder_w"]),   # top of torso
+        (0.30, zones["shoulder_w"]),   # lower shoulders
+        (0.45, zones["waist_w"]),      # waist
+        (0.60, zones["hip_w"]),        # hips
+        (0.90, zones["hip_w"] * 0.5),  # ankles
+    ]
+
+    prev_y = int(0.15 * CANVAS_H)
+    prev_hw = int(zones["shoulder_w"] * CANVAS_W / 2)
+    for ratio_y, ratio_w in segments[1:]:
+        cur_y = int(ratio_y * CANVAS_H)
+        cur_hw = int(ratio_w * CANVAS_W / 2)
+        draw.polygon(
+            [
+                (cx - prev_hw, prev_y),
+                (cx + prev_hw, prev_y),
+                (cx + cur_hw, cur_y),
+                (cx - cur_hw, cur_y),
+            ],
+            fill=(*ACCENT_RGBA, 70),
+        )
+        prev_y, prev_hw = cur_y, cur_hw
+
     return img
 
 
 def _load_mannequin(morpho: str) -> Image.Image:
-    """Load mannequin image from assets or generate placeholder."""
-    import os
-    info = MANNEQUIN_MAP.get(morpho, MANNEQUIN_MAP[DEFAULT_MORPHO])
-    # Try loading from assets folder (relative to this file)
+    """Load mannequin PNG from assets or generate a placeholder."""
+    fname = MANNEQUIN_FILES.get(morpho, MANNEQUIN_FILES[DEFAULT_MORPHO])
     assets_dir = os.path.join(os.path.dirname(__file__), "assets", "mannequins")
-    filepath = os.path.join(assets_dir, info["file"])
+    filepath = os.path.join(assets_dir, fname)
     if os.path.exists(filepath):
         return Image.open(filepath).convert("RGBA")
     return _generate_placeholder_mannequin(morpho)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  Main page render
+# ═════════════════════════════════════════════════════════════════════════════
+
 def render(client, model, user_profile, username):
-    """Render the Virtual Try-On page."""
+    """Render the Virtual Try-On page — fully French UI."""
     advisor = get_style_advisor()
     morpho = user_profile.get("morpho", DEFAULT_MORPHO)
     teint = user_profile.get("teint", "")
-    info = MANNEQUIN_MAP.get(morpho, MANNEQUIN_MAP[DEFAULT_MORPHO])
+    zones = MORPHO_ZONES.get(morpho, MORPHO_ZONES[DEFAULT_MORPHO])
 
-    st.markdown("## Essayage Virtuel")
+    # ── Page title ────────────────────────────────────────────────────────
+    st.markdown("## 👗 Essayage Virtuel")
 
-    # ─── Profile summary card ────────────────────────────────────────────
-    morpho_data = advisor.get_morpho_summary(morpho)
+    # ── Profile summary ──────────────────────────────────────────────────
+    morpho_label = zones["label"]
+    card_teint = f" · Teint : <strong>{teint}</strong>" if teint else ""
     st.markdown(f"""
     <div class="fa-card">
         <span style="color:var(--accent);font-weight:600;">Votre silhouette</span><br>
-        <span style="color:var(--text);">Morphologie <strong>{morpho}</strong> ({morpho_data.get('label', '')})</span>
-        {f' · Teint : <strong>{teint}</strong>' if teint else ''}
+        <span style="color:var(--text);">
+            Morphologie <strong>{morpho}</strong> ({morpho_label}){card_teint}
+        </span>
     </div>
     """, unsafe_allow_html=True)
 
-    # ─── Step 1: Mannequin display ───────────────────────────────────────
+    # ── Étape 1 — Silhouette ─────────────────────────────────────────────
+    st.markdown("#### 1. Votre mannequin")
     mannequin_img = _load_mannequin(morpho)
-    st.image(mannequin_img.convert("RGB"), caption=f"Mannequin {info['label']}", width=200)
+    # Show mannequin at a fixed preview width — responsive via container
+    st.image(
+        mannequin_img.convert("RGB"),
+        caption=f"Silhouette {morpho_label}",
+        width=220,
+    )
 
-    # ─── Step 2: Clothing selection ──────────────────────────────────────
-    st.markdown("### Selectionnez un vetement")
+    # ── Étape 2 — Import du vêtement ─────────────────────────────────────
+    st.markdown("#### 2. Importez votre vêtement")
+
     clothing_source = None
 
-    # Option A: from session state (passed from search / look generator)
+    # Option A: pre-selected item from search / look generator
     vton_item = st.session_state.get("vton_item")
     if vton_item:
-        st.info("Article pre-selectionne depuis la recherche.")
-        # vton_item is expected to be a Qdrant point payload with image data
+        st.success("✔ Article pré-sélectionné depuis la recherche.")
         b64 = vton_item.get("thumb_b64")
         if b64:
-            import base64
             clothing_source = base64.b64decode(b64)
         st.session_state.pop("vton_item", None)
 
-    # Option B: upload directly
-    uploaded = st.file_uploader("Ou importez une image de vetement", type=["png", "jpg", "jpeg"])
+    # Option B: direct upload
+    uploaded = st.file_uploader(
+        "Choisissez une image de vêtement",
+        type=["png", "jpg", "jpeg"],
+        help="Formats acceptés : PNG, JPG, JPEG",
+    )
     if uploaded:
         clothing_source = uploaded.read()
 
-    if clothing_source:
-        with st.spinner("Traitement de l'image..."):
-            clothing_rgba = _try_remove_background(clothing_source)
-
-        st.image(clothing_rgba.convert("RGB"), caption="Vetement (fond supprime)", width=200)
-
-        # ─── Step 3: Compose ─────────────────────────────────────────────
-        with st.spinner("Composition de l'essayage..."):
-            result = _compose_vton(
-                mannequin_img,
-                clothing_rgba,
-                position=info["overlay_pos"],
-                scale=info["scale"],
-            )
-
-        st.markdown("### Resultat")
-        st.image(result, use_container_width=True)
-
-        # Download button
-        buf = io.BytesIO()
-        result.save(buf, format="JPEG", quality=90)
-        st.download_button(
-            "Telecharger le look",
-            data=buf.getvalue(),
-            file_name="mon_look_vton.jpg",
-            mime="image/jpeg",
-        )
-
-        # Style advice
-        advice = advisor.get_advice({"description": "clothing item"}, user_profile)
-        st.markdown(f"""
-        <div class="fa-card" style="border-left:3px solid var(--accent);">
-            <span style="color:var(--accent);font-weight:600;">Conseil Style</span><br>
-            <span style="color:var(--text);font-size:0.9rem;">{advice}</span>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
+    # ── Nothing selected yet ─────────────────────────────────────────────
+    if not clothing_source:
         st.markdown("""
         <div class="fa-card">
             <span style="color:var(--muted);">
-                Importez une image de vetement ou selectionnez un article depuis la recherche
-                pour lancer l'essayage virtuel.
+                Importez une image ou sélectionnez un article depuis la recherche
+                pour lancer l'essayage.
             </span>
         </div>
         """, unsafe_allow_html=True)
+        return
+
+    # ── Étape 3 — Aperçu du vêtement importé ─────────────────────────────
+    st.markdown("#### 3. Aperçu du vêtement")
+    with st.spinner("Suppression du fond en cours…"):
+        clothing_rgba = _try_remove_background(clothing_source)
+
+    st.image(clothing_rgba.convert("RGB"), caption="Vêtement (fond supprimé)", width=200)
+
+    # ── Étape 4 — Résultat de l'essayage ─────────────────────────────────
+    st.markdown("#### 4. Résultat de l'essayage")
+    with st.spinner("Composition en cours…"):
+        result = _compose_vton(mannequin_img, clothing_rgba, morpho)
+
+    # Responsive: use_container_width ensures the fixed 600×900 canvas
+    # scales to any device width without distortion.
+    st.image(result, use_container_width=True)
+
+    # ── Étape 5 — Conseil style ──────────────────────────────────────────
+    advice = advisor.get_advice({"description": "clothing item"}, user_profile)
+    st.markdown(f"""
+    <div class="fa-card" style="border-left:3px solid var(--accent);">
+        <span style="color:var(--accent);font-weight:600;">💡 Conseil Style</span><br>
+        <span style="color:var(--text);font-size:0.9rem;">{advice}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Étape 6 — Téléchargement ─────────────────────────────────────────
+    buf = io.BytesIO()
+    result.save(buf, format="JPEG", quality=92)
+    st.download_button(
+        "📥 Télécharger le résultat",
+        data=buf.getvalue(),
+        file_name="essayage_virtuel.jpg",
+        mime="image/jpeg",
+        use_container_width=True,
+    )

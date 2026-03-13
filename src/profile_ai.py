@@ -154,8 +154,8 @@ def show_profile_sidebar(client, model, username, user_profile=None, require_pas
             if updated_fields:
                 # Appel patch / update partiel
                 save_profile_to_qdrant(client, model, username_input, updated_fields)
-                st.success("Profil sauvegardé avec succès !")
+                st.success("Profil sauvegarde avec succes !")
+                st.session_state.page = "home"
+                st.rerun()
             else:
-                st.info("Aucune modification détectée.")
-
-            st.stop()
+                st.info("Aucune modification detectee.")
