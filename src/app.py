@@ -189,6 +189,12 @@ if st.session_state.page in ("landing", "login", "signup"):
 username = st.session_state.username
 user_profile = get_user_profile(client, username) or {}
 
+# Sync favorites from Qdrant → session state (once per login)
+if "favorites_loaded" not in st.session_state:
+    _fav_ids = get_favorites(client, username)
+    st.session_state.favorites = set(str(f) for f in _fav_ids)
+    st.session_state.favorites_loaded = True
+
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""

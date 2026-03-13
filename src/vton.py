@@ -80,16 +80,25 @@ MANNEQUIN_FILES = {
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _try_remove_background(image_bytes: bytes) -> Image.Image:
-    """Remove background via rembg. Falls back to raw RGBA on failure."""
+    """Remove background via rembg. Resizes large images first for speed."""
+    # Pre-resize: rembg is very slow on large images
+    MAX_DIM = 1024
+    img = Image.open(io.BytesIO(image_bytes))
+    if max(img.size) > MAX_DIM:
+        ratio = MAX_DIM / max(img.size)
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        image_bytes = buf.getvalue()
     try:
         from rembg import remove
         output = remove(image_bytes)
         return Image.open(io.BytesIO(output)).convert("RGBA")
     except ImportError:
-        st.warning("⚠ Module *rembg* non installé — le fond n'a pas été supprimé.")
+        st.warning("Module rembg non installe. Le fond n'a pas ete supprime.")
         return Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     except Exception as e:
-        st.warning(f"⚠ Erreur suppression du fond : {e}")
+        st.warning(f"Erreur suppression du fond : {e}")
         return Image.open(io.BytesIO(image_bytes)).convert("RGBA")
 
 

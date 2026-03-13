@@ -5,7 +5,13 @@ from PIL import Image
 from utile import display_image, toggle_favorite, get_color_advice
 from style_advisor import get_style_advisor
 
-OCCASIONS = ["Casual", "Work", "Evening", "Sport", "Weekend"]
+OCCASIONS = {
+    "Casual": "Decontracte",
+    "Work": "Bureau",
+    "Evening": "Soiree",
+    "Sport": "Sport",
+    "Weekend": "Weekend",
+}
 
 
 def render(client, model, user_profile, username):
@@ -63,33 +69,41 @@ def render(client, model, user_profile, username):
         st.markdown("### Occasion")
         occ_cols = st.columns(len(OCCASIONS))
         selected_occasion = None
-        for i, occ in enumerate(OCCASIONS):
-            if occ_cols[i].button(occ, key=f"occ_{occ}", use_container_width=True):
-                selected_occasion = occ
+        for i, (occ_key, occ_label) in enumerate(OCCASIONS.items()):
+            if occ_cols[i].button(occ_label, key=f"occ_{occ_key}", use_container_width=True):
+                selected_occasion = occ_key
 
         # Remember last selection
         if selected_occasion:
             st.session_state.look_occasion = selected_occasion
+            st.session_state.pop("look_results", None)
         occasion = st.session_state.get("look_occasion")
 
         if not occasion:
             st.caption("Selectionnez une occasion pour generer un look personnalise.")
         else:
-            # ─── Generate outfit ─────────────────────────────────────────
-            query = advisor.build_occasion_query(occasion, user_profile)
+            occ_display = OCCASIONS.get(occasion, occasion)
+            # Cache results per occasion to avoid re-fetching on button clicks
+            if "look_results" not in st.session_state:
+                query = advisor.build_occasion_query(occasion, user_profile)
+                with st.spinner(f"Creation du look {occ_display}..."):
+                    vec = model.encode(query).tolist()
+                    try:
+                        results = client.query_points(
+                            collection_name="fashion_images",
+                            query=vec,
+                            limit=6,
+                        ).points
+                    except Exception as e:
+                        results = []
+                        st.error(f"Erreur de connexion a la base vectorielle : {e}")
+                st.session_state.look_results = results
 
-            with st.spinner(f"Creation du look {occasion}..."):
-                vec = model.encode(query).tolist()
-                try:
-                    results = client.search(collection_name="fashion_images", query_vector=vec, limit=6)
-                except Exception:
-                    results = []
-                    st.error("Erreur de connexion a la base vectorielle.")
-
+            results = st.session_state.get("look_results", [])
             if not results:
                 st.info("Aucun article trouve. Le catalogue est peut-etre vide.")
             else:
-                _render_look(results, occasion, advisor, user_profile, username, client)
+                _render_look(results, occ_display, advisor, user_profile, username, client)
 
     # ══════════════════════════════════════════════════════════════════════
     #  TAB 2 — Image-upload look (from original project)
@@ -123,12 +137,14 @@ def render(client, model, user_profile, username):
                     pil_img = Image.open(img_file)
                     vec = model.encode(pil_img).tolist()
                     try:
-                        img_results = client.search(
-                            collection_name="fashion_images", query_vector=vec, limit=5,
-                        )
-                    except Exception:
+                        img_results = client.query_points(
+                            collection_name="fashion_images",
+                            query=vec,
+                            limit=5,
+                        ).points
+                    except Exception as e:
                         img_results = []
-                        st.error("Erreur de connexion a la base vectorielle.")
+                        st.error(f"Erreur de connexion a la base vectorielle : {e}")
 
                 # Skip first result (closest to the uploaded image itself)
                 suggestions = img_results[1:] if len(img_results) > 1 else img_results
